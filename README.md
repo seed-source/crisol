@@ -42,20 +42,14 @@ $ crisol run cpu-smoke
 | Surface | Name |
 |---|---|
 | GitHub | `seed-source/crisol` (public, MIT) |
-| PyPI | `seedsource-crisol` (org `seedsource`, same family as `sscli`) |
+| PyPI | **`crisol`** |
 | CLI | **`crisol`** or **`sscri`** (same entrypoint) |
 | Module | `py -m crisol` — use this if PATH still has another `crisol` |
 
-Do not type `seedsource-crisol` at the shell. That is the *package*, not the command.
-
 ## Install
 
-From a clean environment:
-
 ```bash
-pip install seedsource-crisol
-# or, from this tree:
-pip install -e .
+pip install crisol
 ```
 
 Then, from any directory:
