@@ -1,0 +1,17 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Crisol run ledger (immutable audit output — keep out of VCS, it grows fast)
+results/*
+!results/.gitkeep
