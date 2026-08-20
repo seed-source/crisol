@@ -9,9 +9,9 @@ Commands: `crisol doctor`, `crisol status`, `crisol jobs`, `crisol run <job>`.
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
-from crisol import core, protocol  # noqa: E402
+from crisol import core, protocol, receiver  # noqa: E402
 from crisol.cli import main  # noqa: E402
 
-__all__ = ["__version__", "main", "core", "protocol"]
+__all__ = ["__version__", "main", "core", "protocol", "receiver"]

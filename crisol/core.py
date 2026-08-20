@@ -155,6 +155,15 @@ def dispatch(
     stdout_text = ""
     stderr_text = ""
     timed_out = False
+    child_env = os.environ.copy()
+    child_env["PYTHONUNBUFFERED"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    pkg_parent = str(PKG_ROOT.parent)
+    child_env["PYTHONPATH"] = (
+        pkg_parent + os.pathsep + child_env["PYTHONPATH"]
+        if "PYTHONPATH" in child_env
+        else pkg_parent
+    )
     try:
         proc = subprocess.run(
             argv,
@@ -162,6 +171,7 @@ def dispatch(
             text=True,
             timeout=job.timeout_s,
             check=False,
+            env=child_env,
         )
         exit_code = proc.returncode
         stdout_text = proc.stdout
@@ -290,3 +300,247 @@ def write_doctor_report() -> dict[str, Any]:
             }
         )
     return report
+
+
+# Config directory for named node aliases
+CONFIG_DIR = Path(os.environ.get("CRISOL_CONFIG_DIR", str(Path.home() / ".crisol")))
+CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+def load_config() -> dict[str, Any]:
+    """Load ~/.crisol/config.json or return default empty schema."""
+    if not CONFIG_FILE.exists():
+        return {"nodes": {}}
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                return {"nodes": {}}
+            if "nodes" not in data or not isinstance(data["nodes"], dict):
+                data["nodes"] = {}
+            return data
+    except Exception:
+        return {"nodes": {}}
+
+
+def save_config(cfg: dict[str, Any]) -> None:
+    """Save config to ~/.crisol/config.json."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with CONFIG_FILE.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, sort_keys=True)
+
+
+def resolve_node_target(target: str | None, token: str | None = None) -> tuple[str | None, str | None]:
+    """Resolve a node target (URL or named alias) to (url, token)."""
+    if not target:
+        return None, token
+
+    # Lookup in config aliases first
+    cfg = load_config()
+    nodes = cfg.get("nodes", {})
+    if target in nodes:
+        node_info = nodes[target]
+        if isinstance(node_info, dict):
+            url = node_info.get("url")
+            resolved_token = token or node_info.get("token")
+            return url, resolved_token
+        elif isinstance(node_info, str):
+            return node_info, token
+
+    # Fallback to direct URL/host
+    return target, token
+
+
+def probe_remote_node(url: str, token: str | None = None) -> dict[str, Any]:
+    """Probe a remote Crisol receiver over HTTP."""
+    import urllib.request
+
+    base_url = url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"http://{base_url}"
+    req = urllib.request.Request(f"{base_url}/health")
+    tok = token or os.environ.get("CRISOL_TOKEN")
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+        req.add_header("X-Crisol-Token", tok)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def dispatch_remote(
+    url: str,
+    job_name: str,
+    seed: int | None = None,
+    detach: bool = False,
+    token: str | None = None,
+    event_callback: Any = None,
+) -> dict[str, Any]:
+    """Dispatch a job to a remote Crisol receiver and stream events in real time or detach."""
+    import urllib.request
+
+    base_url = url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"http://{base_url}"
+
+    tok = token or os.environ.get("CRISOL_TOKEN")
+    payload = json.dumps({"job": job_name, "seed": seed, "detach": detach}).encode("utf-8")
+    req = urllib.request.Request(f"{base_url}/run", data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+        req.add_header("X-Crisol-Token", tok)
+
+    if detach:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            data["node_url"] = base_url
+            return data
+
+    run_id = str(uuid.uuid4())
+    started = time.time()
+    status = "completed"
+    exit_code = 0
+    backend = "remote"
+    node_name = base_url
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                continue
+            stdout_lines.append(line)
+            try:
+                event = json.loads(line)
+            except Exception:
+                event = {"type": "stdout", "line": line}
+
+            if isinstance(event, dict):
+                t = event.get("type")
+                if t == "lifecycle":
+                    ev = event.get("event")
+                    if ev == "remote_dispatch_started":
+                        backend = event.get("backend", backend)
+                        node_name = event.get("node", node_name)
+                    elif ev == "dispatch_complete":
+                        status = event.get("status", status)
+                        exit_code = event.get("exit_code", exit_code)
+                elif t == "error":
+                    stderr_lines.append(event.get("error", ""))
+                    status = "failed"
+                    exit_code = 1
+                if event_callback:
+                    event_callback(event)
+
+    elapsed = time.time() - started
+    record: dict[str, Any] = {
+        "run_id": run_id,
+        "job": job_name,
+        "node": f"remote@{node_name}",
+        "backend": backend,
+        "status": status,
+        "exit_code": exit_code,
+        "elapsed_s": round(elapsed, 4),
+        "seed": seed if seed is not None else DEFAULT_SEED,
+        "timed_out": False,
+        "stdout": "\n".join(stdout_lines),
+        "stderr": "\n".join(stderr_lines),
+        "ts": _now_iso(),
+    }
+    ledger = append_run(record)
+    record["ledger"] = str(ledger)
+    return record
+
+
+def listen_remote(
+    url: str,
+    run_id: str,
+    token: str | None = None,
+    event_callback: Any = None,
+) -> dict[str, Any]:
+    """Connect to a running or completed remote job's event stream."""
+    import urllib.request
+
+    base_url = url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"http://{base_url}"
+
+    tok = token or os.environ.get("CRISOL_TOKEN")
+    req = urllib.request.Request(f"{base_url}/runs/{run_id}/listen")
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+        req.add_header("X-Crisol-Token", tok)
+
+    started = time.time()
+    status = "completed"
+    exit_code = 0
+    backend = "remote"
+    node_name = base_url
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                continue
+            stdout_lines.append(line)
+            try:
+                event = json.loads(line)
+            except Exception:
+                event = {"type": "stdout", "line": line}
+
+            if isinstance(event, dict):
+                t = event.get("type")
+                if t == "lifecycle":
+                    ev = event.get("event")
+                    if ev == "remote_dispatch_started":
+                        backend = event.get("backend", backend)
+                        node_name = event.get("node", node_name)
+                    elif ev == "dispatch_complete":
+                        status = event.get("status", status)
+                        exit_code = event.get("exit_code", exit_code)
+                elif t == "error":
+                    stderr_lines.append(event.get("error", ""))
+                    status = "failed"
+                    exit_code = 1
+                if event_callback:
+                    event_callback(event)
+
+    elapsed = time.time() - started
+    record: dict[str, Any] = {
+        "run_id": run_id,
+        "job": "listen",
+        "node": f"remote@{node_name}",
+        "backend": backend,
+        "status": status,
+        "exit_code": exit_code,
+        "elapsed_s": round(elapsed, 4),
+        "seed": DEFAULT_SEED,
+        "timed_out": False,
+        "stdout": "\n".join(stdout_lines),
+        "stderr": "\n".join(stderr_lines),
+        "ts": _now_iso(),
+    }
+    ledger = append_run(record)
+    record["ledger"] = str(ledger)
+    return record
+
+
+def list_remote_runs(url: str, token: str | None = None) -> list[dict[str, Any]]:
+    """List recent runs from a remote Crisol receiver."""
+    import urllib.request
+
+    base_url = url.rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        base_url = f"http://{base_url}"
+    req = urllib.request.Request(f"{base_url}/runs")
+    tok = token or os.environ.get("CRISOL_TOKEN")
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+        req.add_header("X-Crisol-Token", tok)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data.get("runs", [])
+

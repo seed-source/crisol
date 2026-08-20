@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crisol"
-version = "0.1.0"
+version = "0.1.1"
 description = "Zero-bloat heterogeneous compute dispatcher and benchmark runner with immutable JSONL audit."
 readme = "README.md"
 license = { text = "MIT" }

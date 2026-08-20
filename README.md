@@ -68,16 +68,50 @@ crisol run cpu-smoke --seed 42   # override the deterministic seed
 `crisol jobs` also lists `torch-smoke`, which runs a real FP16 matmul on CUDA
 when available and reports honest TFLOPS.
 
+## Remote Dispatch & Multi-Node Labs (Receiver & Client)
+
+Crisol includes a zero-dependency HTTP receiver daemon for dispatching workloads to remote compute hosts (GPU rigs, Mac Silicon nodes, cloud VMs) with real-time NDJSON event streaming.
+
+### 1. Start Receiver on Compute Host
+```bash
+crisol receiver --port 8430 --token my-secret
+```
+
+### 2. Configure Named Node on Local Machine
+```bash
+crisol config set-node m2 http://192.168.1.50:8430 --token my-secret
+crisol config list
+```
+
+### 3. Check Remote Health & Dispatch
+```bash
+# Probe remote node
+crisol status --node m2
+
+# Interactive real-time streaming
+crisol run torch-smoke --node m2
+
+# Detached background execution (run & reconnect)
+crisol run torch-smoke --node m2 --detach
+# -> Job 'torch-smoke' dispatched in background! Run ID: run_a9e9f510
+
+# List runs on remote node
+crisol runs --node m2
+
+# Stream/listen to the running or completed job
+crisol listen run_a9e9f510 --node m2
+```
+
 ## What you get
 
-- **`crisol status`** — probes reachable nodes (local CPU; optional local torch
-  surface with CUDA).
-- **`crisol jobs`** — lists the registered dispatch contract, including each
-  job's default seed.
-- **`crisol run <job> [--seed N]`** — dispatches the job as a subprocess and
-  writes a JSONL run record to `results/`.
-- **`crisol doctor`** — validates your Python, torch/CUDA availability, and
-  that the results ledger is writable.
+- **`crisol status [--node <name|url>]`** — probes reachable nodes locally or on a remote receiver.
+- **`crisol jobs`** — lists the registered dispatch contract, including each job's default seed.
+- **`crisol run <job> [--node <name|url>] [--seed N] [--detach]`** — dispatches the job locally or remotely with live event streaming and immutable JSONL audit.
+- **`crisol listen <run_id> --node <name|url>`** — reconnects to a remote running or completed job's event stream.
+- **`crisol runs --node <name|url>`** — lists recent runs and execution status from a remote node.
+- **`crisol config [set-node|rm-node|list]`** — manages friendly node aliases (`~/.crisol/config.json`).
+- **`crisol receiver [--host H] [--port P] [--token T]`** — starts the zero-bloat HTTP receiver daemon.
+- **`crisol doctor`** — validates your Python, torch/CUDA availability, and that the results ledger is writable.
 
 ## The JSONL audit ledger
 
