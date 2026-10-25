@@ -225,6 +225,15 @@ JOBS: dict[str, Job] = {
         timeout_s=120,
         requires_optional=True,
     ),
+    "mini-lyra-train": Job(
+        name="mini-lyra-train",
+        description="Mini-Lyra OLM massive training workload with 80/20 Cross-Entropy + River Phase Resonance hybrid loss on GPU.",
+        module="crisol.jobs.mini_lyra_train",
+        backends=("cuda",),
+        default_seed=DEFAULT_SEED,
+        timeout_s=3600,
+        requires_optional=True,
+    ),
 }
 
 
